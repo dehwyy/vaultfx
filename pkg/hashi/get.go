@@ -3,6 +3,8 @@ package hashi
 import (
 	"context"
 	"strings"
+
+	vaultclient "github.com/hashicorp/vault-client-go"
 )
 
 func (h *Hashi) MustGet(ctx context.Context, key string) any {
@@ -21,12 +23,13 @@ func (h *Hashi) Get(ctx context.Context, key string) (any, error) {
 
 	switch keyParts[0] {
 	case "kv":
-		value, err := h.vault.KVv1(keyParts[0]).Get(ctx, keyParts[1])
+		data, err := h.do(ctx, func(token vaultclient.RequestOption) (*vaultclient.Response[map[string]any], error) {
+			return h.vault.Read(ctx, keyParts[0]+"/"+keyParts[1], token)
+		})
 		if err != nil {
 			return "", err
 		}
-
-		return value.Data[keyParts[2]], nil
+		return data[keyParts[2]], nil
 	}
 
 	return "", ErrUnsupportedVaultType
