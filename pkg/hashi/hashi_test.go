@@ -192,3 +192,161 @@ func TestConfigFromEnv(t *testing.T) {
 		})
 	}
 }
+
+func TestPutAndRead(t *testing.T) {
+	tests := []struct {
+		name     string
+		ref      SecretRef
+		wantPath string
+		wantBody map[string]any
+	}{
+		{
+			name:     "v1 default",
+			ref:      SecretRef{Mount: "kv", Path: "a/b"},
+			wantPath: "/v1/kv/a/b",
+			wantBody: map[string]any{"k": "v"},
+		},
+		{
+			name:     "v1 explicit",
+			ref:      SecretRef{Mount: "kv", Path: "a/b", Version: KVv1},
+			wantPath: "/v1/kv/a/b",
+			wantBody: map[string]any{"k": "v"},
+		},
+		{
+			name:     "v2 wraps data",
+			ref:      SecretRef{Mount: "kv-audit", Path: "daily/2026-10-02", Version: KVv2},
+			wantPath: "/v1/kv-audit/data/daily/2026-10-02",
+			wantBody: map[string]any{"data": map[string]any{"k": "v"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newFakeVault(t, func(call int, req recordedRequest, w http.ResponseWriter) {
+				if req.Method == http.MethodGet {
+					data := map[string]any{"k": "v"}
+					if tt.ref.Version == KVv2 {
+						writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"data": data, "metadata": map[string]any{"version": 1}}})
+						return
+					}
+					writeJSON(w, http.StatusOK, map[string]any{"data": data})
+					return
+				}
+				if tt.ref.Version == KVv2 {
+					writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"version": 1}})
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})
+			client := newClient(t, fake, StaticToken("tok"))
+
+			require.NoError(t, client.Put(context.Background(), tt.ref, map[string]any{"k": "v"}))
+			got, err := client.Read(context.Background(), tt.ref)
+			require.NoError(t, err)
+			require.Equal(t, map[string]any{"k": "v"}, got)
+
+			requests := fake.requests()
+			require.Len(t, requests, 2)
+			require.Equal(t, http.MethodPut, requests[0].Method)
+			require.Equal(t, tt.wantPath, requests[0].Path)
+			require.Equal(t, tt.wantBody, requests[0].Body)
+			require.Equal(t, "tok", requests[0].Token)
+		})
+	}
+}
+
+func TestPutAndReadErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		ref     SecretRef
+		status  int
+		wantErr error
+		noCall  bool
+	}{
+		{name: "missing mount", ref: SecretRef{Path: "a"}, noCall: true},
+		{name: "missing path", ref: SecretRef{Mount: "kv"}, noCall: true},
+		{name: "bad version", ref: SecretRef{Mount: "kv", Path: "a", Version: 3}, noCall: true},
+		{name: "denied", ref: SecretRef{Mount: "kv", Path: "a"}, status: http.StatusForbidden, wantErr: ErrPermissionDenied},
+		{name: "not found", ref: SecretRef{Mount: "kv", Path: "a"}, status: http.StatusNotFound, wantErr: ErrNotFound},
+		{name: "unavailable", ref: SecretRef{Mount: "kv", Path: "a", Version: KVv2}, status: http.StatusServiceUnavailable, wantErr: ErrUnavailable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newFakeVault(t, func(call int, req recordedRequest, w http.ResponseWriter) {
+				writeJSON(w, tt.status, map[string]any{"errors": []string{"x"}})
+			})
+			client := newClient(t, fake, StaticToken("tok"))
+
+			putErr := client.Put(context.Background(), tt.ref, map[string]any{"k": "v"})
+			_, readErr := client.Read(context.Background(), tt.ref)
+			require.Error(t, putErr)
+			require.Error(t, readErr)
+			if tt.noCall {
+				require.Empty(t, fake.requests())
+				return
+			}
+			require.ErrorIs(t, putErr, tt.wantErr)
+			require.ErrorIs(t, readErr, tt.wantErr)
+		})
+	}
+}
+
+func TestPutUsesRotatedToken(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(path, []byte("tok-old"), 0o600))
+	fake := newFakeVault(t, func(call int, req recordedRequest, w http.ResponseWriter) {
+		if req.Token != "tok-new" {
+			writeJSON(w, http.StatusForbidden, map[string]any{"errors": []string{"permission denied"}})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	client := newClient(t, fake, FileToken(path, 0))
+	_, err := client.applyToken(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, []byte("tok-new"), 0o600))
+
+	err = client.Put(context.Background(), SecretRef{Mount: "kv", Path: "a"}, map[string]any{"k": "v"})
+	require.NoError(t, err)
+	requests := fake.requests()
+	require.Len(t, requests, 2)
+	require.Equal(t, "tok-old", requests[0].Token)
+	require.Equal(t, "tok-new", requests[1].Token)
+}
+
+func TestWrite(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		status  int
+		want    map[string]any
+		wantErr error
+		noCall  bool
+	}{
+		{name: "returns data", path: "transit/encrypt/k", status: http.StatusOK, want: map[string]any{"ciphertext": "c"}},
+		{name: "empty path", path: "", noCall: true},
+		{name: "denied", path: "transit/encrypt/k", status: http.StatusForbidden, wantErr: ErrPermissionDenied},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newFakeVault(t, func(call int, req recordedRequest, w http.ResponseWriter) {
+				writeJSON(w, tt.status, map[string]any{"data": map[string]any{"ciphertext": "c"}})
+			})
+			client := newClient(t, fake, StaticToken("tok"))
+
+			got, err := client.Write(context.Background(), tt.path, map[string]any{"a": "b"})
+			if tt.noCall {
+				require.Error(t, err)
+				require.Empty(t, fake.requests())
+				return
+			}
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got)
+			require.Equal(t, "/v1/transit/encrypt/k", fake.requests()[0].Path)
+			require.Equal(t, map[string]any{"a": "b"}, fake.requests()[0].Body)
+		})
+	}
+}
