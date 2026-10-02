@@ -28,8 +28,8 @@ func (c *Client) Sign(ctx context.Context, input []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	signature, _ := data["signature"].(string)
-	if signature == "" {
+	signature, ok := data["signature"].(string)
+	if !ok || signature == "" {
 		return "", fmt.Errorf("%w: sign response without signature", ErrBadResponse)
 	}
 	return signature, nil

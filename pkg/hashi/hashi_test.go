@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -246,7 +247,7 @@ func TestPutAndRead(t *testing.T) {
 
 			requests := fake.requests()
 			require.Len(t, requests, 2)
-			require.Equal(t, http.MethodPut, requests[0].Method)
+			require.Equal(t, http.MethodPost, requests[0].Method)
 			require.Equal(t, tt.wantPath, requests[0].Path)
 			require.Equal(t, tt.wantBody, requests[0].Body)
 			require.Equal(t, "tok", requests[0].Token)
@@ -301,16 +302,100 @@ func TestPutUsesRotatedToken(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	client := newClient(t, fake, FileToken(path, 0))
-	_, err := client.applyToken(context.Background())
-	require.NoError(t, err)
+
+	err := client.Put(context.Background(), SecretRef{Mount: "kv", Path: "a"}, map[string]any{"k": "v"})
+	require.ErrorIs(t, err, ErrPermissionDenied)
+
 	require.NoError(t, os.WriteFile(path, []byte("tok-new"), 0o600))
 
 	err = client.Put(context.Background(), SecretRef{Mount: "kv", Path: "a"}, map[string]any{"k": "v"})
 	require.NoError(t, err)
+
 	requests := fake.requests()
-	require.Len(t, requests, 2)
+	require.Len(t, requests, 3)
 	require.Equal(t, "tok-old", requests[0].Token)
-	require.Equal(t, "tok-new", requests[1].Token)
+	require.Equal(t, "tok-old", requests[1].Token)
+	require.Equal(t, "tok-new", requests[2].Token)
+}
+
+func TestTokenIsPerRequest(t *testing.T) {
+	fake := newFakeVault(t, kvSecretHandler)
+	first := newClient(t, fake, StaticToken("tok-a"))
+	second := newClient(t, fake, StaticToken("tok-b"))
+
+	var group sync.WaitGroup
+	for range 20 {
+		group.Add(2)
+		go func() {
+			defer group.Done()
+			_, err := first.Get(context.Background(), "kv.db.password")
+			require.NoError(t, err)
+		}()
+		go func() {
+			defer group.Done()
+			_, err := second.Get(context.Background(), "kv.db.password")
+			require.NoError(t, err)
+		}()
+	}
+	group.Wait()
+
+	tokens := map[string]int{}
+	for _, request := range fake.requests() {
+		tokens[request.Token]++
+	}
+	require.Equal(t, map[string]int{"tok-a": 20, "tok-b": 20}, tokens)
+}
+
+func TestNetworkFailureIsUnavailable(t *testing.T) {
+	fake := newFakeVault(t, kvSecretHandler)
+	client := newClient(t, fake, StaticToken("tok"))
+	fake.server.Close()
+
+	_, err := client.Get(context.Background(), "kv.db.password")
+	require.ErrorIs(t, err, ErrUnavailable)
+
+	_, err = client.Write(context.Background(), "transit/encrypt/k", map[string]any{"a": "b"})
+	require.ErrorIs(t, err, ErrUnavailable)
+}
+
+func TestWriteNoContentReturnsEmptyData(t *testing.T) {
+	fake := newFakeVault(t, func(call int, req recordedRequest, w http.ResponseWriter) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	client := newClient(t, fake, StaticToken("tok"))
+
+	got, err := client.Write(context.Background(), "sys/x", map[string]any{"a": "b"})
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Empty(t, got)
+}
+
+func TestSecretRefSentinels(t *testing.T) {
+	tests := []struct {
+		name    string
+		ref     SecretRef
+		wantErr error
+	}{
+		{name: "missing mount", ref: SecretRef{Path: "a"}, wantErr: ErrInvalidSecretRef},
+		{name: "missing path", ref: SecretRef{Mount: "kv"}, wantErr: ErrInvalidSecretRef},
+		{name: "bad version", ref: SecretRef{Mount: "kv", Path: "a", Version: 3}, wantErr: ErrUnsupportedKVVersion},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := newFakeVault(t, kvSecretHandler)
+			client := newClient(t, fake, StaticToken("tok"))
+
+			require.ErrorIs(t, client.Put(context.Background(), tt.ref, nil), tt.wantErr)
+			_, err := client.Read(context.Background(), tt.ref)
+			require.ErrorIs(t, err, tt.wantErr)
+		})
+	}
+
+	fake := newFakeVault(t, kvSecretHandler)
+	client := newClient(t, fake, StaticToken("tok"))
+	_, err := client.Write(context.Background(), "", nil)
+	require.ErrorIs(t, err, ErrEmptyPath)
 }
 
 func TestWrite(t *testing.T) {

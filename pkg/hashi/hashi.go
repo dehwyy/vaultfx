@@ -4,18 +4,16 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sync"
 
-	hashi "github.com/hashicorp/vault/api"
+	vaultclient "github.com/hashicorp/vault-client-go"
 )
 
 type Hashi struct {
-	vault  *hashi.Client
+	vault  *vaultclient.Client
 	tokens TokenSource
-
-	mu      sync.Mutex
-	applied string
 }
+
+type vaultCall func(token vaultclient.RequestOption) (*vaultclient.Response[map[string]any], error)
 
 func New(_ Opts) *Hashi {
 	config, err := ConfigFromEnv()
@@ -38,21 +36,10 @@ func NewWithConfig(config Config) (*Hashi, error) {
 		return nil, ErrEmptyToken
 	}
 
-	apiConfig := hashi.DefaultConfig()
-	apiConfig.HttpClient = config.httpClient()
-	apiConfig.Address = config.Address
-	switch {
-	case config.MaxRetries > 0:
-		apiConfig.MaxRetries = config.MaxRetries
-	case config.MaxRetries < 0:
-		apiConfig.MaxRetries = 0
-	}
-
-	client, err := hashi.NewClient(apiConfig)
+	client, err := vaultclient.New(config.clientOptions()...)
 	if err != nil {
 		return nil, fmt.Errorf("vault: new client: %w", err)
 	}
-	client.ClearToken()
 
 	return &Hashi{
 		vault:  client,
@@ -60,36 +47,32 @@ func NewWithConfig(config Config) (*Hashi, error) {
 	}, nil
 }
 
-func (h *Hashi) applyToken(ctx context.Context) (string, error) {
-	token, err := h.tokens.Token(ctx)
+func (h *Hashi) do(ctx context.Context, call vaultCall) (map[string]any, error) {
+	used, err := h.tokens.Token(ctx)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if token != h.applied {
-		h.vault.SetToken(token)
-		h.applied = token
-	}
-	return token, nil
-}
-
-func (h *Hashi) do(ctx context.Context, call func() error) error {
-	used, err := h.applyToken(ctx)
-	if err != nil {
-		return err
-	}
-
-	err = call()
-	if statusOf(err) != http.StatusForbidden {
-		return classify(err)
+	data, err := call(vaultclient.WithToken(used))
+	if !vaultclient.IsErrorStatus(err, http.StatusForbidden) {
+		return finish(data, err)
 	}
 
 	h.tokens.Invalidate()
-	refreshed, tokenErr := h.applyToken(ctx)
+	refreshed, tokenErr := h.tokens.Token(ctx)
 	if tokenErr != nil || refreshed == used {
-		return classify(err)
+		return nil, classify(err)
 	}
-	return classify(call())
+
+	return finish(call(vaultclient.WithToken(refreshed)))
+}
+
+func finish(response *vaultclient.Response[map[string]any], err error) (map[string]any, error) {
+	if err != nil {
+		return nil, classify(err)
+	}
+	if response == nil || response.Data == nil {
+		return map[string]any{}, nil
+	}
+	return response.Data, nil
 }

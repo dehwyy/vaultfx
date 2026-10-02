@@ -402,3 +402,25 @@ func TestFxModule(t *testing.T) {
 	require.NotNil(t, cipher)
 	require.NotNil(t, signer)
 }
+
+func TestTransportFailureIsUnavailable(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	address := server.URL
+	server.Close()
+
+	client, err := hashi.NewWithConfig(hashi.Config{
+		Address:    address,
+		Token:      hashi.StaticToken("tok"),
+		MaxRetries: -1,
+	})
+	require.NoError(t, err)
+
+	cipher, err := transit.New(client, transit.Config{Key: "k"})
+	require.NoError(t, err)
+
+	_, err = cipher.Encrypt(context.Background(), []byte("x"), nil)
+	require.ErrorIs(t, err, transit.ErrUnavailable)
+
+	_, err = cipher.Sign(context.Background(), []byte("x"))
+	require.ErrorIs(t, err, transit.ErrUnavailable)
+}

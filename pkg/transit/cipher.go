@@ -22,8 +22,8 @@ func (c *Client) Encrypt(ctx context.Context, plaintext, aad []byte) (string, er
 	if err != nil {
 		return "", err
 	}
-	ciphertext, _ := data["ciphertext"].(string)
-	if ciphertext == "" {
+	ciphertext, ok := data["ciphertext"].(string)
+	if !ok || ciphertext == "" {
 		return "", fmt.Errorf("%w: encrypt response without ciphertext", ErrBadResponse)
 	}
 	return ciphertext, nil

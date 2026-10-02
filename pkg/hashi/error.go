@@ -1,13 +1,11 @@
 package hashi
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
-	vaultapi "github.com/hashicorp/vault/api"
+	vaultclient "github.com/hashicorp/vault-client-go"
 )
 
 var (
@@ -17,52 +15,31 @@ var (
 	ErrPermissionDenied     = errors.New("vault: permission denied")
 	ErrUnavailable          = errors.New("vault: unavailable")
 	ErrEmptyAddress         = errors.New("vault: address is empty")
+	ErrEmptyPath            = errors.New("vault: path is empty")
+	ErrInvalidSecretRef     = errors.New("vault: secret ref requires mount and path")
+	ErrUnsupportedKVVersion = errors.New("vault: unsupported kv version")
 	ErrEmptyToken           = errors.New("vault: token source is not configured")
 )
-
-func statusOf(err error) int {
-	var responseErr *vaultapi.ResponseError
-	if errors.As(err, &responseErr) {
-		return responseErr.StatusCode
-	}
-	return 0
-}
 
 func classify(err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, vaultapi.ErrSecretNotFound) {
-		return fmt.Errorf("%w: %w", ErrNotFound, err)
+
+	var responseErr *vaultclient.ResponseError
+	if !errors.As(err, &responseErr) {
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
-	switch status := statusOf(err); {
+
+	switch status := responseErr.StatusCode; {
 	case status == http.StatusNotFound:
 		return fmt.Errorf("%w: %w", ErrNotFound, err)
 	case status == http.StatusForbidden:
 		return fmt.Errorf("%w: %w", ErrPermissionDenied, err)
 	case status >= http.StatusInternalServerError:
 		return fmt.Errorf("%w: %w", ErrUnavailable, err)
-	case status != 0:
-		return err
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("%w: %w", ErrUnavailable, err)
-	}
-	msg := err.Error()
-	for _, marker := range unavailableMarkers {
-		if strings.Contains(msg, marker) {
-			return fmt.Errorf("%w: %w", ErrUnavailable, err)
-		}
 	}
 	return err
-}
-
-var unavailableMarkers = []string{
-	"connection refused",
-	"no such host",
-	"i/o timeout",
-	"context deadline exceeded",
-	"EOF",
 }
 
 func envNotSet(name string) error {

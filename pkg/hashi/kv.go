@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	hashi "github.com/hashicorp/vault/api"
+	vaultclient "github.com/hashicorp/vault-client-go"
 )
 
 type KVVersion int
@@ -22,12 +22,19 @@ type SecretRef struct {
 
 func (r SecretRef) validate() error {
 	if r.Mount == "" || r.Path == "" {
-		return fmt.Errorf("vault: secret ref requires mount and path")
+		return ErrInvalidSecretRef
 	}
 	if r.Version != 0 && r.Version != KVv1 && r.Version != KVv2 {
-		return fmt.Errorf("vault: unsupported kv version %d", r.Version)
+		return fmt.Errorf("%w: %d", ErrUnsupportedKVVersion, r.Version)
 	}
 	return nil
+}
+
+func (r SecretRef) apiPath() string {
+	if r.Version == KVv2 {
+		return r.Mount + "/data/" + r.Path
+	}
+	return r.Mount + "/" + r.Path
 }
 
 func (h *Hashi) Put(ctx context.Context, ref SecretRef, data map[string]any) error {
@@ -35,13 +42,15 @@ func (h *Hashi) Put(ctx context.Context, ref SecretRef, data map[string]any) err
 		return err
 	}
 
-	return h.do(ctx, func() error {
-		if ref.Version == KVv2 {
-			_, err := h.vault.KVv2(ref.Mount).Put(ctx, ref.Path, data)
-			return err
-		}
-		return h.vault.KVv1(ref.Mount).Put(ctx, ref.Path, data)
+	body := data
+	if ref.Version == KVv2 {
+		body = map[string]any{"data": data}
+	}
+
+	_, err := h.do(ctx, func(token vaultclient.RequestOption) (*vaultclient.Response[map[string]any], error) {
+		return h.vault.Write(ctx, ref.apiPath(), body, token)
 	})
+	return err
 }
 
 func (h *Hashi) Read(ctx context.Context, ref SecretRef) (map[string]any, error) {
@@ -49,18 +58,20 @@ func (h *Hashi) Read(ctx context.Context, ref SecretRef) (map[string]any, error)
 		return nil, err
 	}
 
-	var secret *hashi.KVSecret
-	err := h.do(ctx, func() error {
-		var callErr error
-		if ref.Version == KVv2 {
-			secret, callErr = h.vault.KVv2(ref.Mount).Get(ctx, ref.Path)
-			return callErr
-		}
-		secret, callErr = h.vault.KVv1(ref.Mount).Get(ctx, ref.Path)
-		return callErr
+	data, err := h.do(ctx, func(token vaultclient.RequestOption) (*vaultclient.Response[map[string]any], error) {
+		return h.vault.Read(ctx, ref.apiPath(), token)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return secret.Data, nil
+
+	if ref.Version != KVv2 {
+		return data, nil
+	}
+
+	inner, ok := data["data"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s/%s has no data", ErrNotFound, ref.Mount, ref.Path)
+	}
+	return inner, nil
 }

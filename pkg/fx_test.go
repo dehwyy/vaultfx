@@ -53,6 +53,42 @@ func TestNewHashiFxFromEnv(t *testing.T) {
 	require.NotNil(t, provider)
 }
 
+func TestNewHashiFxStoreFromEnv(t *testing.T) {
+	t.Setenv("KEY_VAULT_ADDRESS", "http://127.0.0.1:1")
+	t.Setenv("KEY_VAULT_TOKEN", "t")
+
+	var (
+		client   *hashi.Hashi
+		provider vault.SecretsProvider
+		writer   vault.SecretsWriter
+		store    vault.Store
+	)
+	app := fxtest.New(
+		t,
+		vault.NewHashiFxStore(),
+		fx.Populate(&client, &provider, &writer, &store),
+	)
+	app.RequireStart()
+	app.RequireStop()
+	require.NotNil(t, client)
+	require.NotNil(t, provider)
+	require.NotNil(t, writer)
+	require.NotNil(t, store)
+}
+
+func TestNewHashiFxProvidesOnlySecretsProvider(t *testing.T) {
+	t.Setenv("KEY_VAULT_ADDRESS", "http://127.0.0.1:1")
+	t.Setenv("KEY_VAULT_TOKEN", "t")
+
+	var client *hashi.Hashi
+	app := fx.New(
+		fx.NopLogger,
+		vault.NewHashiFx(),
+		fx.Populate(&client),
+	)
+	require.Error(t, app.Err())
+}
+
 func TestNewHashiFxWithConfigFailsOnInvalidConfig(t *testing.T) {
 	app := fx.New(
 		vault.NewHashiFxWithConfig(hashi.Config{}),

@@ -13,9 +13,13 @@ Backward compatible: `vault.SecretsProvider`, `vault.NewHashiFx`, `vault.NewHash
 - `Hashi.Write` raw logical write.
 - Error classification: `ErrNotFound`, `ErrPermissionDenied`, `ErrUnavailable`, original error preserved.
 - `pkg/transit`: `Cipher` (Encrypt, Decrypt with AAD), `Signer` (Sign, Verify), `AAD`, `FxModule`.
-- `NewHashiFx` additionally provides `*hashi.Hashi`, `SecretsWriter` and `Store`.
+- `NewHashiFxStore()` provides `*hashi.Hashi`, `SecretsProvider`, `SecretsWriter` and `Store` from the environment. `NewHashiFx` is unchanged and provides only `SecretsProvider`, so existing consumers cannot get duplicate providers.
+- Sentinel errors `ErrEmptyPath`, `ErrInvalidSecretRef`, `ErrUnsupportedKVVersion`.
 
 ### Changed
+
+- The client is rewritten on `github.com/hashicorp/vault-client-go` v0.4.3 (replaces `hashicorp/vault/api`). The token is passed per request, there is no shared mutable token. Every non-HTTP failure maps to `ErrUnavailable`.
+- `Hashi.Write` returns an empty non-nil map on 204.
 
 - Every call (including `Get`) now goes through the token source, so `Get` benefits from file token rotation.
 - `Get` errors are wrapped with the sentinel classification; `errors.As(err, *vaultapi.ResponseError)` still works.

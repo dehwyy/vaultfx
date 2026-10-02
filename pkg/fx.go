@@ -6,6 +6,14 @@ import (
 )
 
 func NewHashiFx() fx.Option {
+	return fx.Provide(
+		func(opts hashi.Opts) SecretsProvider {
+			return hashi.New(opts)
+		},
+	)
+}
+
+func NewHashiFxStore() fx.Option {
 	return fx.Options(
 		fx.Provide(func(opts hashi.Opts) *hashi.Hashi {
 			return hashi.New(opts)

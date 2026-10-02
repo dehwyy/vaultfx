@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	hashi "github.com/hashicorp/vault/api"
+	vaultclient "github.com/hashicorp/vault-client-go"
 )
 
 func (h *Hashi) MustGet(ctx context.Context, key string) any {
@@ -23,17 +23,13 @@ func (h *Hashi) Get(ctx context.Context, key string) (any, error) {
 
 	switch keyParts[0] {
 	case "kv":
-		var value *hashi.KVSecret
-		err := h.do(ctx, func() error {
-			var callErr error
-			value, callErr = h.vault.KVv1(keyParts[0]).Get(ctx, keyParts[1])
-			return callErr
+		data, err := h.do(ctx, func(token vaultclient.RequestOption) (*vaultclient.Response[map[string]any], error) {
+			return h.vault.Read(ctx, keyParts[0]+"/"+keyParts[1], token)
 		})
 		if err != nil {
 			return "", err
 		}
-
-		return value.Data[keyParts[2]], nil
+		return data[keyParts[2]], nil
 	}
 
 	return "", ErrUnsupportedVaultType

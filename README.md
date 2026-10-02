@@ -63,11 +63,11 @@ err := store.Put(ctx, ref, map[string]any{"root_hash": "..."})
 data, err := store.Read(ctx, ref)
 ```
 
-`Version` defaults to KV v1. Interfaces: `SecretsProvider` (unchanged), `SecretsWriter` (`Put`, `Read`), `Store` (both). `NewHashiFx` provides all three plus `*hashi.Hashi`. `Hashi.Write(ctx, path, data)` is the raw logical write used by Transit.
+`Version` defaults to KV v1. Interfaces: `SecretsProvider` (unchanged), `SecretsWriter` (`Put`, `Read`), `Store` (both). `NewHashiFx` still provides only `SecretsProvider`; `NewHashiFxStore()` (env) and `NewHashiFxWithConfig(cfg)` provide `*hashi.Hashi`, `SecretsProvider`, `SecretsWriter` and `Store`. Use one of them, not several together. The client is built on `hashicorp/vault-client-go`; the token is sent per request (`vault.WithToken`), so several `hashi.Hashi` instances with different roles never share a token. `Hashi.Write(ctx, path, data)` is the raw logical write used by Transit.
 
 ## Errors
 
-`errors.Is` against `hashi.ErrNotFound` (404), `hashi.ErrPermissionDenied` (403), `hashi.ErrUnavailable` (5xx, network, timeout, unreadable token file). The original Vault error stays in the chain.
+`errors.Is` against `hashi.ErrNotFound` (404), `hashi.ErrPermissionDenied` (403), `hashi.ErrUnavailable` (5xx, any transport failure such as TLS, connection reset or timeout, unreadable token file). The original Vault error stays in the chain.
 
 ## Transit
 
@@ -102,4 +102,4 @@ fx.New(
 | `transit.AAD(a, b, c)` | `transit.AAD(a, b, c)` |
 | `transit.ErrUnavailable` | `transit.ErrUnavailable` |
 | `Cipher` interface | `transit.Cipher` |
-| retries disabled | `hashi.Config{MaxRetries: -1}` |
+| retries disabled (provider-core used `RetryMax=-1`) | `hashi.Config{MaxRetries: -1}`; the env path keeps the library default of 2 retries, so build the client with `NewHashiFxWithConfig` for a drop-in match |

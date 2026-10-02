@@ -2,28 +2,21 @@ package hashi
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
-	hashi "github.com/hashicorp/vault/api"
+	vaultclient "github.com/hashicorp/vault-client-go"
 )
 
 func (h *Hashi) Write(ctx context.Context, path string, data map[string]any) (map[string]any, error) {
 	if path == "" {
-		return nil, errors.New("vault: write path is empty")
+		return nil, ErrEmptyPath
 	}
 
-	var secret *hashi.Secret
-	err := h.do(ctx, func() error {
-		var callErr error
-		secret, callErr = h.vault.Logical().WriteWithContext(ctx, path, data)
-		return callErr
+	result, err := h.do(ctx, func(token vaultclient.RequestOption) (*vaultclient.Response[map[string]any], error) {
+		return h.vault.Write(ctx, path, data, token)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("vault: write %s: %w", path, err)
 	}
-	if secret == nil {
-		return nil, nil
-	}
-	return secret.Data, nil
+	return result, nil
 }

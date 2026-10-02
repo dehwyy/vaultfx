@@ -1,12 +1,12 @@
 package hashi
 
 import (
-	"crypto/tls"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	vaultclient "github.com/hashicorp/vault-client-go"
 	"go.uber.org/fx"
 )
 
@@ -62,18 +62,29 @@ func tokenFromEnv() (TokenSource, error) {
 	return nil, envNotSet(envKeyVaultToken)
 }
 
-func (c Config) httpClient() *http.Client {
-	if c.HTTPClient != nil {
-		return c.HTTPClient
-	}
+func (c Config) clientOptions() []vaultclient.ClientOption {
 	timeout := c.Timeout
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
-	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: c.InsecureSkipVerify},
-		},
+
+	retry := vaultclient.DefaultConfiguration().RetryConfiguration
+	switch {
+	case c.MaxRetries > 0:
+		retry.RetryMax = c.MaxRetries
+	case c.MaxRetries < 0:
+		retry.RetryMax = 0
 	}
+
+	options := []vaultclient.ClientOption{
+		vaultclient.WithAddress(c.Address),
+		vaultclient.WithRequestTimeout(timeout),
+		vaultclient.WithRetryConfiguration(retry),
+	}
+	if c.HTTPClient != nil {
+		return append(options, vaultclient.WithHTTPClient(c.HTTPClient))
+	}
+	return append(options, vaultclient.WithTLS(vaultclient.TLSConfiguration{
+		InsecureSkipVerify: c.InsecureSkipVerify,
+	}))
 }
