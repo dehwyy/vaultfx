@@ -3,6 +3,8 @@ package hashi
 import (
 	"context"
 	"strings"
+
+	hashi "github.com/hashicorp/vault/api"
 )
 
 func (h *Hashi) MustGet(ctx context.Context, key string) any {
@@ -21,7 +23,12 @@ func (h *Hashi) Get(ctx context.Context, key string) (any, error) {
 
 	switch keyParts[0] {
 	case "kv":
-		value, err := h.vault.KVv1(keyParts[0]).Get(ctx, keyParts[1])
+		var value *hashi.KVSecret
+		err := h.do(ctx, func() error {
+			var callErr error
+			value, callErr = h.vault.KVv1(keyParts[0]).Get(ctx, keyParts[1])
+			return callErr
+		})
 		if err != nil {
 			return "", err
 		}
